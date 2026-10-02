@@ -302,8 +302,13 @@ const server = createServer(async (request, response) => {
       return send(response, 200, { ok: true, ...last });
     }
     if (request.method === "POST" && url.pathname === "/api/conversation/start") {
-      if (conversation || busy || recorder) throw new Error("Skelly is already active.");
+      if (conversation) {
+        last.error = "";
+        return send(response, 200, { ok: true, alreadyActive: true });
+      }
+      if (busy || recorder) throw new Error("Skelly is finishing the current turn. Try again in a moment.");
       conversation = true;
+      last.error = "";
       conversationLoop();
       return send(response, 200, { ok: true });
     }
