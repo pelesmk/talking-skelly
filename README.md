@@ -39,6 +39,8 @@ npm start
 
 Open <http://127.0.0.1:4317> and click **Start voice chat** once. Skelly automatically detects when a visitor speaks and when they finish, answers, and resumes listening.
 
+If a recording, transcription, response, or spoken line gets stuck, click **Flush current turn**. It immediately cancels that work and returns an active voice chat to listening mode without restarting the app.
+
 ## Mac app
 
 Build the native launcher with:

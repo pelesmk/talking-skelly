@@ -16,17 +16,19 @@
     .dot.good { background: #68d391; }
     button { border: 0; border-radius: 14px; padding: 15px 20px; font: inherit; font-weight: 800; color: white; background: #7246b7; cursor: pointer; }
     button.primary { width: 100%; font-size: 1.35rem; padding: 24px; background: linear-gradient(135deg, #9c56e8, #5d2da4); }
+    button.flush { background: #9b3d58; }
     button:disabled { opacity: .45; cursor: wait; }
     label { display: grid; gap: 6px; color: #cabede; }
     input, select, textarea { box-sizing: border-box; width: 100%; border: 1px solid #554568; border-radius: 10px; padding: 10px; color: white; background: #100d18; font: inherit; }
     textarea { min-height: 120px; }
     .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; }
+    .actions { display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: stretch; }
     .wide { grid-column: 1 / -1; }
     .bubble { padding: 13px 15px; border-radius: 14px; background: #2a2239; margin-top: 10px; min-height: 22px; }
     .error { color: #ff9ca5; white-space: pre-wrap; }
     details summary { cursor: pointer; font-weight: 800; }
     pre { overflow: auto; white-space: pre-wrap; color: #bfb4d2; }
-    @media (max-width: 600px) { .grid { grid-template-columns: 1fr; } }
+    @media (max-width: 600px) { .grid, .actions { grid-template-columns: 1fr; } }
   </style>
 </head>
 <body><main>
@@ -34,7 +36,10 @@
   <p class="sub">Local ears, local brain, custom voice.</p>
   <section class="card status"><span id="dot" class="dot"></span><div><strong id="state">Checking…</strong><div id="requirements"></div></div></section>
   <section class="card">
-    <button id="conversation" class="primary">Start voice chat</button>
+    <div class="actions">
+      <button id="conversation" class="primary">Start voice chat</button>
+      <button id="flush" class="flush" title="Cancel recording, transcription, thinking, or speech and resume listening">Flush current turn</button>
+    </div>
     <p><strong>Visitor</strong></p><div id="heard" class="bubble">—</div>
     <p><strong>Skelly</strong></p><div id="reply" class="bubble">—</div>
     <p id="error" class="error"></p>
@@ -97,6 +102,15 @@ $("conversation").onclick = async () => {
   try { await api(conversation ? "/api/conversation/stop" : "/api/conversation/start", { method: "POST" }); }
   catch(e) { $("error").textContent = e.message; }
   finally { $("conversation").disabled = false; refresh(); }
+};
+$("flush").onclick = async () => {
+  $("flush").disabled = true;
+  $("state").textContent = "Flushing current turn…";
+  try {
+    await api("/api/conversation/flush", { method: "POST" });
+    $("error").textContent = "";
+  } catch(e) { $("error").textContent = e.message; }
+  finally { $("flush").disabled = false; setTimeout(refresh, 150); }
 };
 async function saveSettings(message = "Settings saved") {
   const body={};
