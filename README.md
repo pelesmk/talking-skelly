@@ -6,6 +6,10 @@ A local, automatic voice-chat Halloween character for macOS:
 
 Whisper recognizes speech. Ollama writes the response. The included voice engine uses a macOS voice plus adjustable pitch, echo, speed, and volume. It can later be replaced by a neural TTS or a consented voice-cloning engine.
 
+## Which Skelly?
+
+This project was built for Home Depot's [12 FT Giant-Sized Animated LED App Controlled Skelly with LCD LifeEyes](https://www.homedepot.com/p/339865655) — model **26SV25555**, Internet # **339865655**. This is the version with DecorPro app control, Bluetooth Live mode, an internal speaker, and animated head and mouth movement.
+
 ## One-time setup
 
 1. Install Whisper: `brew install whisper-cpp`
