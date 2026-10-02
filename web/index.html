@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Talking Skelly</title>
+  <style>
+    :root { color-scheme: dark; font-family: ui-rounded, system-ui, sans-serif; }
+    body { margin: 0; min-height: 100vh; background: radial-gradient(circle at top, #36225b, #100d18 55%); color: #f8f4ff; }
+    main { width: min(760px, calc(100% - 32px)); margin: 32px auto; }
+    h1 { font-size: clamp(2.4rem, 8vw, 5rem); margin: 0; letter-spacing: -.06em; }
+    .sub { color: #cbbfe3; margin: 4px 0 24px; }
+    .card { background: #1c1727dd; border: 1px solid #4b3d65; border-radius: 20px; padding: 20px; margin: 16px 0; box-shadow: 0 18px 60px #0006; }
+    .status { display: flex; gap: 14px; align-items: center; }
+    .dot { width: 13px; height: 13px; border-radius: 50%; background: #e05b66; box-shadow: 0 0 18px currentColor; }
+    .dot.good { background: #68d391; }
+    button { border: 0; border-radius: 14px; padding: 15px 20px; font: inherit; font-weight: 800; color: white; background: #7246b7; cursor: pointer; }
+    button.primary { width: 100%; font-size: 1.35rem; padding: 24px; background: linear-gradient(135deg, #9c56e8, #5d2da4); }
+    button:disabled { opacity: .45; cursor: wait; }
+    label { display: grid; gap: 6px; color: #cabede; }
+    input, select, textarea { box-sizing: border-box; width: 100%; border: 1px solid #554568; border-radius: 10px; padding: 10px; color: white; background: #100d18; font: inherit; }
+    textarea { min-height: 120px; }
+    .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; }
+    .wide { grid-column: 1 / -1; }
+    .bubble { padding: 13px 15px; border-radius: 14px; background: #2a2239; margin-top: 10px; min-height: 22px; }
+    .error { color: #ff9ca5; white-space: pre-wrap; }
+    details summary { cursor: pointer; font-weight: 800; }
+    pre { overflow: auto; white-space: pre-wrap; color: #bfb4d2; }
+    @media (max-width: 600px) { .grid { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body><main>
+  <h1>Talking Skelly</h1>
+  <p class="sub">Local ears, local brain, custom voice.</p>
+  <section class="card status"><span id="dot" class="dot"></span><div><strong id="state">Checking…</strong><div id="requirements"></div></div></section>
+  <section class="card">
+    <button id="conversation" class="primary">Start voice chat</button>
+    <p><strong>Visitor</strong></p><div id="heard" class="bubble">—</div>
+    <p><strong>Skelly</strong></p><div id="reply" class="bubble">—</div>
+    <p id="error" class="error"></p>
+  </section>
+  <details class="card" open><summary>Skelly settings</summary><div class="grid" style="margin-top:16px">
+    <label>Ollama model<select id="ollamaModel"><option>Loading models…</option></select></label>
+    <label>Voice style<select id="voicePreset"><option value="skeleton">Skeleton</option></select></label>
+    <label>Voice speed<select id="voiceRate"><option value="125">Very slow</option><option value="135" selected>Slow</option><option value="145">Relaxed</option><option value="155">Normal</option></select></label>
+    <label>Pitch<select id="pitchSemitones"><option value="0">Normal</option><option value="-2" selected>Low</option><option value="-4">Very low</option></select></label>
+    <input id="voice" type="hidden" value="Daniel">
+    <input id="echo" type="hidden" value="0.06">
+    <input id="volume" type="hidden" value="1.5">
+    <label>Microphone number<input id="microphoneIndex"></label>
+    <label class="wide">Character instructions<textarea id="systemPrompt"></textarea></label>
+    <button id="test">Test Skeleton voice</button>
+    <div id="saveStatus" class="wide" style="color:#9ae6b4;min-height:1.4em">Changes save automatically</div>
+  </div></details>
+  <details class="card"><summary>Find microphone number</summary><button id="devices" style="margin-top:14px">Show audio devices</button><pre id="deviceList"></pre></details>
+</main><script>
+const $ = (id) => document.getElementById(id);
+let conversation = false;
+let loaded = false;
+async function loadModels(selected) {
+  const { models } = await api("/api/models");
+  $("ollamaModel").innerHTML = "";
+  models.forEach(({name, size, parameters}) => {
+    const option = document.createElement("option");
+    option.value = name;
+    const gb = size ? `${(size / 1e9).toFixed(1)} GB` : "";
+    option.textContent = `${name}${parameters || gb ? ` — ${parameters || gb}` : ""}`;
+    option.selected = name === selected;
+    $("ollamaModel").appendChild(option);
+  });
+}
+async function api(path, options) {
+  const response = await fetch(path, options);
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || "Request failed");
+  return data;
+}
+async function refresh() {
+  try {
+    const s = await api("/api/status");
+    $("dot").classList.toggle("good", s.ollama && s.whisper);
+    conversation = s.conversation;
+    $("state").textContent = s.busy ? "Skelly is answering…" : s.recording ? "Listening for a visitor…" : "Ready";
+    $("conversation").textContent = s.conversation ? "Stop voice chat" : "Start voice chat";
+    $("requirements").textContent = `Ollama ${s.ollama ? "✓" : "✗"} · Whisper ${s.whisper ? "✓" : "✗"}`;
+    $("heard").textContent = s.transcript || "—"; $("reply").textContent = s.reply || "—";
+    $("error").textContent = s.error || "";
+    if (!loaded) {
+      Object.entries(s.config).forEach(([k,v]) => { if ($(k)) $(k).value = v; });
+      await loadModels(s.config.ollamaModel);
+      loaded = true;
+    }
+  } catch (e) { $("error").textContent = e.message; }
+}
+$("conversation").onclick = async () => {
+  $("conversation").disabled = true;
+  try { await api(conversation ? "/api/conversation/stop" : "/api/conversation/start", { method: "POST" }); }
+  catch(e) { $("error").textContent = e.message; }
+  finally { $("conversation").disabled = false; refresh(); }
+};
+async function saveSettings(message = "Settings saved") {
+  const body={};
+  ["ollamaModel","voice","voiceRate","pitchSemitones","echo","volume","microphoneIndex","systemPrompt"].forEach(k=>body[k]=$(k).value);
+  $("saveStatus").textContent = "Saving…";
+  try {
+    await api("/api/config",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)});
+    $("saveStatus").textContent = `✓ ${message}`;
+    $("error").textContent = "";
+  } catch (e) {
+    $("saveStatus").textContent = "";
+    $("error").textContent = e.message;
+    throw e;
+  }
+}
+let saveTimer;
+function scheduleSave() {
+  if (!loaded) return;
+  clearTimeout(saveTimer);
+  $("saveStatus").textContent = "Saving…";
+  saveTimer = setTimeout(() => saveSettings("Saved automatically").catch(() => {}), 350);
+}
+["ollamaModel","voicePreset","voiceRate","pitchSemitones","microphoneIndex","systemPrompt"].forEach(id => {
+  $(id).addEventListener(id === "systemPrompt" ? "input" : "change", scheduleSave);
+});
+$("test").onclick = async () => {
+  $("test").disabled=true;
+  try {
+    await saveSettings("Skeleton voice saved");
+    $("saveStatus").textContent = "Playing voice…";
+    await api("/api/speak",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({text:"Greetings, mortals. Skelly is awake!"})});
+    $("saveStatus").textContent = "✓ Played Skeleton voice";
+  } catch(e) { $("error").textContent=e.message; }
+  finally { $("test").disabled=false; }
+};
+$("devices").onclick = async () => { $("deviceList").textContent=(await api("/api/devices")).text; };
+refresh(); setInterval(refresh, 2500);
+</script></body></html>
