@@ -36,3 +36,7 @@ On first recording, macOS may ask for microphone permission for Terminal or Code
 ## Avoiding feedback
 
 The app uses automatic half-duplex turn-taking: it listens to the visitor, stops listening while Skelly speaks, then resumes. Keep the Bluetooth microphone several feet from Skelly's speaker for the cleanest detection.
+
+## License
+
+MIT
