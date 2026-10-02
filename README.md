@@ -10,8 +10,22 @@ Whisper recognizes speech. Ollama writes the response. The included voice engine
 
 1. Install Whisper: `brew install whisper-cpp`
 2. Download the English model: `mkdir -p models && curl -L -o models/ggml-base.en.bin https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin`
-3. In macOS Sound settings, select **12ft Skelly(Live)** as the output.
-4. Start Ollama if it is not already running.
+3. Start Ollama if it is not already running.
+
+## Connect Skelly and the remote microphone
+
+Skelly's Live Bluetooth connection is hidden until it is enabled through the phone app. Complete these steps before launching Talking Skelly:
+
+1. Power on Skelly.
+2. On your phone, open the **DecorPro SVI** app and connect to Skelly.
+3. Open **Customize** and tap **Live**. This makes **Skelly (Live)** discoverable over Bluetooth.
+4. On the Mac hosting Talking Skelly, open **System Settings → Bluetooth** and connect to **Skelly (Live)**. The device may appear as **12ft Skelly (Live)** or a similar name.
+5. If macOS requests a Bluetooth PIN, enter **1234**.
+6. Open **System Settings → Sound → Input** and select the remote microphone positioned near Skelly. Our deployment uses **EMEET OfficeCore M0 Plus**, hidden in a nearby bush.
+7. Under **System Settings → Sound → Output**, select **Skelly (Live)**. Talking Skelly's generated voice will play through Skelly's internal speaker and move its jaw.
+8. Launch **Talking Skelly.app**. It starts the local server and enables hands-free listening automatically.
+
+If the microphone is not detected correctly, open **Find microphone number** in the Talking Skelly control panel and select the input that corresponds to the remote microphone.
 
 ## Run
 
@@ -31,7 +45,7 @@ npm run build:mac
 
 Then open `dist/Talking Skelly.app`. It starts the server, opens the control panel in its own window, and enables hands-free listening automatically. The app can be copied into the Applications folder or dragged into the Dock.
 
-On first recording, macOS may ask for microphone permission for Terminal or Codex. Allow it. Use **Find microphone number** in the app to identify the desired input.
+On first recording, macOS may ask for microphone permission for Talking Skelly, Terminal, or Codex. Allow it.
 
 ## Avoiding feedback
 
