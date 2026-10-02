@@ -25,11 +25,9 @@ Skelly's Live Bluetooth connection is hidden until it is enabled through the pho
 3. Open **Customize** and tap **Live**. This makes **Skelly (Live)** discoverable over Bluetooth.
 4. On the Mac hosting Talking Skelly, open **System Settings → Bluetooth** and connect to **Skelly (Live)**. The device may appear as **12ft Skelly (Live)** or a similar name.
 5. If macOS requests a Bluetooth PIN, enter **1234**.
-6. Open **System Settings → Sound → Input** and select the remote microphone positioned near Skelly. Our deployment uses **EMEET OfficeCore M0 Plus**, hidden in a nearby bush.
+6. Open **System Settings → Sound → Input** and select the remote microphone positioned near Skelly. Talking Skelly automatically follows the Mac's selected input. Our deployment uses **EMEET OfficeCore M0 Plus**, hidden in a nearby bush.
 7. Under **System Settings → Sound → Output**, select **Skelly (Live)**. Talking Skelly's generated voice will play through Skelly's internal speaker and move its jaw.
 8. Launch **Talking Skelly.app**. It starts the local server and enables hands-free listening automatically.
-
-If the microphone is not detected correctly, open **Find microphone number** in the Talking Skelly control panel and select the input that corresponds to the remote microphone.
 
 ## Run
 

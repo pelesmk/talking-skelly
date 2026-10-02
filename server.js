@@ -112,15 +112,6 @@ async function status() {
   };
 }
 
-async function listAudioDevices() {
-  try {
-    const result = await run("ffmpeg", ["-hide_banner", "-f", "avfoundation", "-list_devices", "true", "-i", ""]);
-    return result.stderr;
-  } catch (error) {
-    return error.message;
-  }
-}
-
 async function listVoices() {
   const { stdout } = await run("say", ["-v", "?"]);
   return stdout.split("\n").map((line) => {
@@ -143,11 +134,10 @@ async function listModels() {
 
 async function startRecording() {
   if (recorder || busy) throw new Error("Skelly is already recording or thinking.");
-  const config = await readConfig();
   const wav = join(runtime, "visitor.wav");
   recorder = spawn("ffmpeg", [
     "-y", "-hide_banner", "-loglevel", "error", "-f", "avfoundation",
-    "-i", `:${config.microphoneIndex}`, "-ac", "1", "-ar", "16000",
+    "-i", ":default", "-ac", "1", "-ar", "16000",
     "-c:a", "pcm_s16le", wav
   ], { cwd: root, stdio: ["pipe", "ignore", "pipe"] });
   let captureError = "";
@@ -177,7 +167,7 @@ async function stopRecordingAndAnswer() {
     const result = await runVoice("whisper-cli", ["-m", model, "-f", wav, "-nt", "-np"]);
     assertCurrentTurn(generation);
     const transcript = result.stdout.trim().replace(/^\[[^\]]+\]\s*/gm, "").trim();
-    if (!transcript) throw new Error("I couldn't hear anything. Check the microphone selection and try again.");
+    if (!transcript) throw new Error("I couldn't hear anything. Check the input selected in macOS Sound settings and try again.");
     last.transcript = transcript;
 
     const nextHistory = [...history, { role: "user", content: transcript }].slice(-12);
@@ -197,14 +187,13 @@ async function stopRecordingAndAnswer() {
 }
 
 async function captureAutomaticTurn(generation) {
-  const config = await readConfig();
   const wav = join(runtime, "visitor.wav");
   return new Promise((resolveTurn, reject) => {
     let heardSpeech = false;
     let finished = false;
     let captureError = "";
     const child = spawn("ffmpeg", [
-      "-y", "-hide_banner", "-f", "avfoundation", "-i", `:${config.microphoneIndex}`,
+      "-y", "-hide_banner", "-f", "avfoundation", "-i", ":default",
       "-ac", "1", "-ar", "16000", "-af", "silencedetect=noise=-38dB:d=1.1",
       "-c:a", "pcm_s16le", wav
     ], { cwd: root, stdio: ["pipe", "ignore", "pipe"] });
@@ -357,7 +346,6 @@ const server = createServer(async (request, response) => {
       return send(response, 200, await readFile(join(root, "web", "index.html"), "utf8"), "text/html");
     }
     if (request.method === "GET" && url.pathname === "/api/status") return send(response, 200, await status());
-    if (request.method === "GET" && url.pathname === "/api/devices") return send(response, 200, { text: await listAudioDevices() });
     if (request.method === "GET" && url.pathname === "/api/voices") return send(response, 200, { voices: await listVoices() });
     if (request.method === "GET" && url.pathname === "/api/models") return send(response, 200, { models: await listModels() });
     if (request.method === "POST" && url.pathname === "/api/record/start") {
@@ -394,7 +382,7 @@ const server = createServer(async (request, response) => {
     if (request.method === "POST" && url.pathname === "/api/config") {
       const current = await readConfig();
       const update = await jsonBody(request);
-      const allowed = ["ollamaModel", "microphoneIndex", "voiceRate", "pitchSemitones", "systemPrompt"];
+      const allowed = ["ollamaModel", "voiceRate", "pitchSemitones", "systemPrompt"];
       for (const key of allowed) if (key in update) current[key] = update[key];
       current.voice = "Daniel";
       current.echo = 0.06;

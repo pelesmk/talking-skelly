@@ -2,7 +2,6 @@
   "ollamaModel": "glm-4.7-flash:latest",
   "ollamaUrl": "http://127.0.0.1:11434",
   "whisperModel": "models/ggml-base.en.bin",
-  "microphoneIndex": "0",
   "voice": "Daniel",
   "voiceRate": "125",
   "pitchSemitones": "-4",

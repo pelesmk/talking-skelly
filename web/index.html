@@ -52,12 +52,10 @@
     <input id="voice" type="hidden" value="Daniel">
     <input id="echo" type="hidden" value="0.06">
     <input id="volume" type="hidden" value="1.5">
-    <label>Microphone number<input id="microphoneIndex"></label>
     <label class="wide">Character instructions<textarea id="systemPrompt"></textarea></label>
     <button id="test">Test Skeleton voice</button>
     <div id="saveStatus" class="wide" style="color:#9ae6b4;min-height:1.4em">Changes save automatically</div>
   </div></details>
-  <details class="card"><summary>Find microphone number</summary><button id="devices" style="margin-top:14px">Show audio devices</button><pre id="deviceList"></pre></details>
 </main><script>
 const $ = (id) => document.getElementById(id);
 let conversation = false;
@@ -114,7 +112,7 @@ $("flush").onclick = async () => {
 };
 async function saveSettings(message = "Settings saved") {
   const body={};
-  ["ollamaModel","voice","voiceRate","pitchSemitones","echo","volume","microphoneIndex","systemPrompt"].forEach(k=>body[k]=$(k).value);
+  ["ollamaModel","voice","voiceRate","pitchSemitones","echo","volume","systemPrompt"].forEach(k=>body[k]=$(k).value);
   $("saveStatus").textContent = "Saving…";
   try {
     await api("/api/config",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)});
@@ -133,7 +131,7 @@ function scheduleSave() {
   $("saveStatus").textContent = "Saving…";
   saveTimer = setTimeout(() => saveSettings("Saved automatically").catch(() => {}), 350);
 }
-["ollamaModel","voicePreset","voiceRate","pitchSemitones","microphoneIndex","systemPrompt"].forEach(id => {
+["ollamaModel","voicePreset","voiceRate","pitchSemitones","systemPrompt"].forEach(id => {
   $(id).addEventListener(id === "systemPrompt" ? "input" : "change", scheduleSave);
 });
 $("test").onclick = async () => {
@@ -146,6 +144,5 @@ $("test").onclick = async () => {
   } catch(e) { $("error").textContent=e.message; }
   finally { $("test").disabled=false; }
 };
-$("devices").onclick = async () => { $("deviceList").textContent=(await api("/api/devices")).text; };
 refresh(); setInterval(refresh, 2500);
 </script></body></html>
