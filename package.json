@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "start": "node server.js",
+    "start:standalone": "SKELLY_DEPLOYMENT_MODE=standalone SKELLY_PORT=4317 node server.js",
+    "start:pi": "SKELLY_DEPLOYMENT_MODE=pi SKELLY_PORT=4318 node server.js",
     "check": "node --check server.js",
     "build:mac": "zsh scripts/build-mac-app.sh"
   }

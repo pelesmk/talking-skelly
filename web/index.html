@@ -25,6 +25,8 @@
     .actions { display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: stretch; }
     .wide { grid-column: 1 / -1; }
     .bubble { padding: 13px 15px; border-radius: 14px; background: #2a2239; margin-top: 10px; min-height: 22px; }
+    .pi-grid { display: grid; grid-template-columns: 1fr; gap: 12px; }
+    .pi-grid input { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
     .error { color: #ff9ca5; white-space: pre-wrap; }
     details summary { cursor: pointer; font-weight: 800; }
     pre { overflow: auto; white-space: pre-wrap; color: #bfb4d2; }
@@ -33,8 +35,17 @@
 </head>
 <body><main>
   <h1>Talking Skelly</h1>
-  <p class="sub">Local ears, local brain, custom voice.</p>
+  <p id="subtitle" class="sub">Waking the bones…</p>
   <section class="card status"><span id="dot" class="dot"></span><div><strong id="state">Checking…</strong><div id="requirements"></div></div></section>
+  <section id="piCard" class="card" hidden>
+    <h2 style="margin-top:0">Remote front end</h2>
+    <p>A Raspberry Pi or Mac laptop handles the microphone and Skelly speaker. This Mac handles Whisper, the model, and the voice.</p>
+    <div class="pi-grid">
+      <label>Private AI address<select id="piUrl"></select></label>
+      <label>Remote access token<input id="piToken" readonly></label>
+      <div id="piDetail" class="bubble">Waiting for a remote front end…</div>
+    </div>
+  </section>
   <section class="card">
     <div class="actions">
       <button id="conversation" class="primary">Start voice chat</button>
@@ -60,6 +71,7 @@
 const $ = (id) => document.getElementById(id);
 let conversation = false;
 let loaded = false;
+let piSetupLoaded = false;
 async function loadModels(selected) {
   const { models } = await api("/api/models");
   $("ollamaModel").innerHTML = "";
@@ -78,14 +90,43 @@ async function api(path, options) {
   if (!response.ok) throw new Error(data.error || "Request failed");
   return data;
 }
+async function loadPiSetup() {
+  if (piSetupLoaded) return;
+  const setup = await api("/api/remote/setup");
+  $("piUrl").innerHTML = "";
+  setup.urls.forEach((url) => {
+    const option = document.createElement("option");
+    option.value = url;
+    option.textContent = url;
+    $("piUrl").appendChild(option);
+  });
+  $("piToken").value = setup.token;
+  piSetupLoaded = true;
+}
 async function refresh() {
   try {
     const s = await api("/api/status");
-    $("dot").classList.toggle("good", s.ollama && s.whisper);
+    const piMode = s.config.deploymentMode === "pi";
+    $("subtitle").textContent = piMode ? "Remote ears, Mac brain, Skelly voice." : "Mac ears, Mac brain, Skelly voice.";
+    $("piCard").hidden = !piMode;
+    $("dot").classList.toggle("good", s.ollama && s.whisper && (!piMode || s.remote.connected));
     conversation = s.conversation;
-    $("state").textContent = s.busy ? "Skelly is answering…" : s.recording ? "Listening for a visitor…" : "Ready";
-    $("conversation").textContent = s.conversation ? "Stop voice chat" : "Start voice chat";
-    $("requirements").textContent = `Ollama ${s.ollama ? "✓" : "✗"} · Whisper ${s.whisper ? "✓" : "✗"}`;
+    if (piMode) {
+      $("state").textContent = s.busy ? "Skelly is answering…" : s.remote.connected ? `${s.remote.client || "Remote"}: ${s.remote.state}` : "Waiting for a remote front end…";
+      $("conversation").textContent = "Voice chat runs on remote front end";
+      $("conversation").disabled = true;
+      $("test").disabled = true;
+      $("test").textContent = "Test by speaking through the remote front end";
+      $("piDetail").textContent = s.remote.connected ? `${s.remote.client || "Remote"} · ${s.remote.state}${s.remote.detail ? ` — ${s.remote.detail}` : ""}` : "Waiting for a remote front end…";
+      loadPiSetup().catch((error) => { $("error").textContent = error.message; });
+    } else {
+      $("state").textContent = s.busy ? "Skelly is answering…" : s.recording ? "Listening for a visitor…" : "Ready";
+      $("conversation").textContent = s.conversation ? "Stop voice chat" : "Start voice chat";
+      $("conversation").disabled = false;
+      $("test").disabled = false;
+      $("test").textContent = "Test Skeleton voice";
+    }
+    $("requirements").textContent = `Ollama ${s.ollama ? "✓" : "✗"} · Whisper ${s.whisper ? "✓" : "✗"}${piMode ? ` · Remote front end ${s.remote.connected ? "✓" : "✗"}` : ""}`;
     $("heard").textContent = s.transcript || "—"; $("reply").textContent = s.reply || "—";
     $("error").textContent = s.error || "";
     if (!loaded) {

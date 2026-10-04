@@ -11,8 +11,26 @@
 
 @implementation SkellyAppDelegate
 
-- (NSURL *)appURL { return [NSURL URLWithString:@"http://127.0.0.1:4317/?app=1"]; }
-- (NSURL *)statusURL { return [NSURL URLWithString:@"http://127.0.0.1:4317/api/status"]; }
+- (NSString *)appName {
+    return [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleDisplayName"] ?: @"Talking Skelly";
+}
+
+- (NSString *)deploymentMode {
+    return [[NSBundle mainBundle] objectForInfoDictionaryKey:@"SkellyDeploymentMode"] ?: @"standalone";
+}
+
+- (NSInteger)serverPort {
+    NSNumber *port = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"SkellyServerPort"];
+    return port ? port.integerValue : 4317;
+}
+
+- (NSURL *)appURL {
+    return [NSURL URLWithString:[NSString stringWithFormat:@"http://127.0.0.1:%ld/?app=1", (long)self.serverPort]];
+}
+
+- (NSURL *)statusURL {
+    return [NSURL URLWithString:[NSString stringWithFormat:@"http://127.0.0.1:%ld/api/status", (long)self.serverPort]];
+}
 
 - (NSURL *)projectURL {
     NSString *path = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"SkellyProjectPath"];
@@ -38,7 +56,7 @@
     [mainMenu addItem:appItem];
     NSMenu *appMenu = [[NSMenu alloc] init];
 
-    NSMenuItem *about = [[NSMenuItem alloc] initWithTitle:@"About Talking Skelly" action:@selector(orderFrontStandardAboutPanel:) keyEquivalent:@""];
+    NSMenuItem *about = [[NSMenuItem alloc] initWithTitle:[NSString stringWithFormat:@"About %@", self.appName] action:@selector(orderFrontStandardAboutPanel:) keyEquivalent:@""];
     about.target = NSApp;
     [appMenu addItem:about];
     [appMenu addItem:[NSMenuItem separatorItem]];
@@ -48,7 +66,7 @@
     [appMenu addItem:reload];
     [appMenu addItem:[NSMenuItem separatorItem]];
 
-    NSMenuItem *quit = [[NSMenuItem alloc] initWithTitle:@"Quit Talking Skelly" action:@selector(terminate:) keyEquivalent:@"q"];
+    NSMenuItem *quit = [[NSMenuItem alloc] initWithTitle:[NSString stringWithFormat:@"Quit %@", self.appName] action:@selector(terminate:) keyEquivalent:@"q"];
     quit.target = NSApp;
     [appMenu addItem:quit];
     appItem.submenu = appMenu;
@@ -81,7 +99,7 @@
         styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable
         backing:NSBackingStoreBuffered
         defer:NO];
-    self.window.title = @"Talking Skelly";
+    self.window.title = self.appName;
     self.window.minSize = NSMakeSize(620, 560);
     [self.window center];
     self.window.contentView = self.webView;
@@ -92,7 +110,7 @@
     NSString *html = [NSString stringWithFormat:
         @"<meta name='viewport' content='width=device-width,initial-scale=1'>"
          "<style>body{margin:0;display:grid;place-items:center;height:100vh;background:#110d19;color:#f7f2ff;font:18px -apple-system}main{text-align:center}.skull{font-size:80px}p{color:#cfc2dd}</style>"
-         "<main><div class='skull'>💀</div><h2>Talking Skelly</h2><p>%@</p></main>", message];
+         "<main><div class='skull'>💀</div><h2>%@</h2><p>%@</p></main>", self.appName, message];
     [self.webView loadHTMLString:html baseURL:nil];
 }
 
@@ -113,6 +131,8 @@
     process.currentDirectoryURL = self.projectURL;
     NSMutableDictionary *environment = [NSProcessInfo.processInfo.environment mutableCopy];
     environment[@"PATH"] = @"/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
+    environment[@"SKELLY_DEPLOYMENT_MODE"] = self.deploymentMode;
+    environment[@"SKELLY_PORT"] = [NSString stringWithFormat:@"%ld", (long)self.serverPort];
     process.environment = environment;
 
     NSURL *logURL = [self.projectURL URLByAppendingPathComponent:@".runtime/mac-app.log"];
@@ -151,7 +171,7 @@
         dispatch_async(dispatch_get_main_queue(), ^{
             if (running) {
                 [weakSelf.webView loadRequest:[NSURLRequest requestWithURL:weakSelf.appURL]];
-                [weakSelf startConversation];
+                if ([weakSelf.deploymentMode isEqualToString:@"standalone"]) [weakSelf startConversation];
             } else if (weakSelf.attempts < 50) {
                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                     [weakSelf waitForServer];

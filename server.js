@@ -1,13 +1,28 @@
 import { createServer } from "node:http";
-import { readFile, writeFile, mkdir, access } from "node:fs/promises";
+import { readFile, writeFile, mkdir, access, unlink } from "node:fs/promises";
 import { spawn } from "node:child_process";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
+import { hostname, networkInterfaces } from "node:os";
 
 const root = dirname(fileURLToPath(import.meta.url));
 const runtime = join(root, ".runtime");
 const configPath = join(root, "config.json");
+const piTokenPath = join(runtime, "pi-token");
 await mkdir(runtime, { recursive: true });
+
+async function loadOrCreatePiToken() {
+  try {
+    return (await readFile(piTokenPath, "utf8")).trim();
+  } catch {
+    const token = randomBytes(24).toString("hex");
+    await writeFile(piTokenPath, `${token}\n`, { mode: 0o600 });
+    return token;
+  }
+}
+
+const piToken = await loadOrCreatePiToken();
 
 let recorder = null;
 let busy = false;
@@ -17,9 +32,13 @@ let last = { transcript: "", reply: "", error: "" };
 let turnGeneration = 0;
 const voiceProcesses = new Set();
 const voiceRequests = new Set();
+let remoteState = { state: "offline", detail: "", lastSeen: 0, client: "" };
 
 const readConfig = async () => JSON.parse(await readFile(configPath, "utf8"));
 const saveConfig = async (config) => writeFile(configPath, JSON.stringify(config, null, 2) + "\n");
+const startupConfig = await readConfig();
+const deploymentMode = process.env.SKELLY_DEPLOYMENT_MODE || startupConfig.deploymentMode || "standalone";
+const serverPort = Number(process.env.SKELLY_PORT || (deploymentMode === "pi" ? 4318 : 4317));
 
 function run(command, args, options = {}, tracked = false) {
   return new Promise((resolveRun, reject) => {
@@ -107,9 +126,35 @@ async function status() {
     busy,
     ollama,
     whisper: await commandExists("whisper-cli"),
-    config,
+    remote: {
+      ...remoteState,
+      connected: Date.now() - remoteState.lastSeen < 15000
+    },
+    config: { ...config, deploymentMode },
     ...last
   };
+}
+
+function piIsAuthorized(request) {
+  const supplied = request.headers.authorization?.replace(/^Bearer\s+/i, "") || "";
+  const expected = Buffer.from(piToken);
+  const actual = Buffer.from(supplied);
+  return expected.length === actual.length && timingSafeEqual(expected, actual);
+}
+
+function isLoopback(request) {
+  const address = request.socket.remoteAddress || "";
+  return address === "127.0.0.1" || address === "::1" || address === "::ffff:127.0.0.1";
+}
+
+function localServerUrls(port) {
+  const urls = new Set([`http://${hostname().replace(/\.local$/, "")}.local:${port}`]);
+  for (const entries of Object.values(networkInterfaces())) {
+    for (const entry of entries || []) {
+      if (entry.family === "IPv4" && !entry.internal) urls.add(`http://${entry.address}:${port}`);
+    }
+  }
+  return [...urls];
 }
 
 async function listVoices() {
@@ -160,30 +205,41 @@ async function stopRecordingAndAnswer() {
   busy = true;
   last.error = "";
   try {
-    const config = await readConfig();
     const wav = join(runtime, "visitor.wav");
-    const model = resolve(root, config.whisperModel);
-    await access(model);
-    const result = await runVoice("whisper-cli", ["-m", model, "-f", wav, "-nt", "-np"]);
-    assertCurrentTurn(generation);
-    const transcript = result.stdout.trim().replace(/^\[[^\]]+\]\s*/gm, "").trim();
-    if (!transcript) throw new Error("I couldn't hear anything. Check the input selected in macOS Sound settings and try again.");
-    last.transcript = transcript;
-
-    const nextHistory = [...history, { role: "user", content: transcript }].slice(-12);
-    const data = await requestReply(config, [{ role: "system", content: config.systemPrompt }, ...nextHistory], generation);
-    assertCurrentTurn(generation);
-    const reply = data.message?.content?.trim();
-    if (!reply) throw new Error("Ollama returned an empty response.");
-    last.reply = reply;
-    await speak(reply, config, generation);
-    history = [...nextHistory, { role: "assistant", content: reply }].slice(-12);
+    const turn = await processAudioTurn(wav, join(runtime, "skelly.wav"), generation, true, "local");
+    if (!turn) throw new Error("I couldn't hear anything. Check the input selected in macOS Sound settings and try again.");
   } catch (error) {
     assertCurrentTurn(generation);
     throw error;
   } finally {
     busy = false;
   }
+}
+
+async function processAudioTurn(wav, output, generation, playAudio, prefix) {
+  const config = await readConfig();
+  const model = resolve(root, config.whisperModel);
+  await access(model);
+  const result = await runVoice("whisper-cli", ["-m", model, "-f", wav, "-nt", "-np"]);
+  assertCurrentTurn(generation);
+  const transcript = result.stdout.trim().replace(/^\[[^\]]+\]\s*/gm, "").trim();
+  if (!transcript || /^\s*\[(silence|blank audio)\]\s*$/i.test(transcript)) return null;
+
+  last.transcript = transcript;
+  const nextHistory = [...history, { role: "user", content: transcript }].slice(-12);
+  const data = await requestReply(config, [{ role: "system", content: config.systemPrompt }, ...nextHistory], generation);
+  assertCurrentTurn(generation);
+  const reply = data.message?.content?.trim();
+  if (!reply) throw new Error("Ollama returned an empty response.");
+
+  last.reply = reply;
+  await renderSpeech(reply, config, generation, output, prefix);
+  if (playAudio) {
+    await runVoice("afplay", [output]);
+    assertCurrentTurn(generation);
+  }
+  history = [...nextHistory, { role: "assistant", content: reply }].slice(-12);
+  return { transcript, reply, output };
 }
 
 async function captureAutomaticTurn(generation) {
@@ -229,23 +285,8 @@ async function answerRecordedTurn(generation) {
   busy = true;
   last.error = "";
   try {
-    const config = await readConfig();
     const wav = join(runtime, "visitor.wav");
-    const model = resolve(root, config.whisperModel);
-    await access(model);
-    const result = await runVoice("whisper-cli", ["-m", model, "-f", wav, "-nt", "-np"]);
-    assertCurrentTurn(generation);
-    const transcript = result.stdout.trim().replace(/^\[[^\]]+\]\s*/gm, "").trim();
-    if (!transcript || /^\s*\[(silence|blank audio)\]\s*$/i.test(transcript)) return;
-    last.transcript = transcript;
-    const nextHistory = [...history, { role: "user", content: transcript }].slice(-12);
-    const data = await requestReply(config, [{ role: "system", content: config.systemPrompt }, ...nextHistory], generation);
-    assertCurrentTurn(generation);
-    const reply = data.message?.content?.trim();
-    if (!reply) throw new Error("Ollama returned an empty response.");
-    last.reply = reply;
-    await speak(reply, config, generation);
-    history = [...nextHistory, { role: "assistant", content: reply }].slice(-12);
+    await processAudioTurn(wav, join(runtime, "skelly.wav"), generation, true, "local");
   } finally { busy = false; }
 }
 
@@ -284,7 +325,7 @@ function flushCurrentTurn() {
   return { ok: true, listening: conversation };
 }
 
-async function speak(text, config, generation = turnGeneration) {
+async function renderSpeech(text, config, generation, output, prefix = "voice") {
   const clean = text
     .replace(/\*[^*]+\*/g, " ")
     .replace(/\[[^\]]+\]/g, " ")
@@ -295,32 +336,37 @@ async function speak(text, config, generation = turnGeneration) {
     .trim()
     .slice(0, 800);
   if (!clean) throw new Error("Skelly's reply contained no speakable text.");
+  const raw = join(runtime, `${prefix}-voice-${generation}.aiff`);
+  await runVoice("say", ["-v", config.voice, "-r", String(config.voiceRate), "-o", raw, clean]);
+  assertCurrentTurn(generation);
+  const probe = await runVoice("ffprobe", [
+    "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=sample_rate",
+    "-of", "default=nw=1:nk=1", raw
+  ]);
+  assertCurrentTurn(generation);
+  const sampleRate = Number.parseInt(probe.stdout.trim(), 10) || 22050;
+  const factor = Math.pow(2, Number(config.pitchSemitones) / 12);
+  const tempo = Math.max(0.5, Math.min(2, 1 / factor));
+  const echo = Math.max(0, Math.min(0.75, Number(config.echo)));
+  const volume = Math.max(0.1, Math.min(3, Number(config.volume)));
+  const effects = [
+    `asetrate=${Math.round(sampleRate * factor)}`,
+    `aresample=${sampleRate}`,
+    `atempo=${tempo.toFixed(5)}`,
+    echo ? `aecho=0.8:0.75:85|170:${echo.toFixed(2)}|${(echo / 2).toFixed(2)}` : null,
+    `volume=${volume}`,
+    "alimiter=limit=0.95"
+  ].filter(Boolean).join(",");
+  await runVoice("ffmpeg", ["-y", "-hide_banner", "-loglevel", "error", "-i", raw, "-af", effects, output]);
+  assertCurrentTurn(generation);
+  await unlink(raw).catch(() => {});
+}
+
+async function speak(text, config, generation = turnGeneration) {
+  const output = join(runtime, "skelly.wav");
   try {
-    const raw = join(runtime, "voice.aiff");
-    const processed = join(runtime, "skelly.wav");
-    await runVoice("say", ["-v", config.voice, "-r", String(config.voiceRate), "-o", raw, clean]);
-    assertCurrentTurn(generation);
-    const probe = await runVoice("ffprobe", [
-      "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=sample_rate",
-      "-of", "default=nw=1:nk=1", raw
-    ]);
-    assertCurrentTurn(generation);
-    const sampleRate = Number.parseInt(probe.stdout.trim(), 10) || 22050;
-    const factor = Math.pow(2, Number(config.pitchSemitones) / 12);
-    const tempo = Math.max(0.5, Math.min(2, 1 / factor));
-    const echo = Math.max(0, Math.min(0.75, Number(config.echo)));
-    const volume = Math.max(0.1, Math.min(3, Number(config.volume)));
-    const effects = [
-      `asetrate=${Math.round(sampleRate * factor)}`,
-      `aresample=${sampleRate}`,
-      `atempo=${tempo.toFixed(5)}`,
-      echo ? `aecho=0.8:0.75:85|170:${echo.toFixed(2)}|${(echo / 2).toFixed(2)}` : null,
-      `volume=${volume}`,
-      "alimiter=limit=0.95"
-    ].filter(Boolean).join(",");
-    await runVoice("ffmpeg", ["-y", "-hide_banner", "-loglevel", "error", "-i", raw, "-af", effects, processed]);
-    assertCurrentTurn(generation);
-    await runVoice("afplay", [processed]);
+    await renderSpeech(text, config, generation, output, "test");
+    await runVoice("afplay", [output]);
     assertCurrentTurn(generation);
   } catch (error) {
     assertCurrentTurn(generation);
@@ -334,20 +380,92 @@ async function jsonBody(request) {
   return body ? JSON.parse(body) : {};
 }
 
+async function bufferBody(request, maximumBytes = 25 * 1024 * 1024) {
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of request) {
+    size += chunk.length;
+    if (size > maximumBytes) throw new Error("Audio upload is too large.");
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks);
+}
+
 function send(response, code, value, type = "application/json") {
   response.writeHead(code, { "content-type": `${type}; charset=utf-8`, "cache-control": "no-store" });
   response.end(type === "application/json" ? JSON.stringify(value) : value);
 }
 
+function sendAudio(response, audio, transcript, reply) {
+  response.writeHead(200, {
+    "content-type": "audio/wav",
+    "content-length": audio.length,
+    "cache-control": "no-store",
+    "x-skelly-transcript": Buffer.from(transcript).toString("base64url"),
+    "x-skelly-reply": Buffer.from(reply).toString("base64url")
+  });
+  response.end(audio);
+}
+
 const server = createServer(async (request, response) => {
   try {
     const url = new URL(request.url, "http://localhost");
+    const remoteApi = url.pathname.startsWith("/api/pi/") || url.pathname.startsWith("/api/remote/");
+    const apiPath = url.pathname.replace(/^\/api\/pi\//, "/api/remote/");
+    if (!isLoopback(request) && !remoteApi) {
+      return send(response, 403, { error: "The Talking Skelly control panel is only available on the Mac." });
+    }
     if (request.method === "GET" && url.pathname === "/") {
       return send(response, 200, await readFile(join(root, "web", "index.html"), "utf8"), "text/html");
     }
     if (request.method === "GET" && url.pathname === "/api/status") return send(response, 200, await status());
     if (request.method === "GET" && url.pathname === "/api/voices") return send(response, 200, { voices: await listVoices() });
     if (request.method === "GET" && url.pathname === "/api/models") return send(response, 200, { models: await listModels() });
+    if (request.method === "GET" && apiPath === "/api/remote/setup") {
+      if (!isLoopback(request)) return send(response, 403, { error: "Remote setup is only visible on the Mac Ultra." });
+      return send(response, 200, { token: piToken, urls: localServerUrls(serverPort) });
+    }
+    if (remoteApi && !piIsAuthorized(request)) {
+      return send(response, 401, { error: "Invalid remote front-end access token." });
+    }
+    if (request.method === "GET" && apiPath === "/api/remote/health") {
+      return send(response, 200, { ok: true, busy, generation: turnGeneration });
+    }
+    if (request.method === "POST" && apiPath === "/api/remote/status") {
+      const update = await jsonBody(request);
+      remoteState = {
+        state: String(update.state || "online").slice(0, 40),
+        detail: String(update.detail || "").slice(0, 160),
+        client: String(update.client || "Remote front end").slice(0, 60),
+        lastSeen: Date.now()
+      };
+      return send(response, 200, { ok: true });
+    }
+    if (request.method === "POST" && apiPath === "/api/remote/turn") {
+      if (busy || recorder) return send(response, 409, { error: "Skelly is already processing another turn." });
+      const audio = await bufferBody(request);
+      if (audio.length < 1000) return send(response, 400, { error: "The remote front end sent an empty recording." });
+
+      const generation = turnGeneration;
+      const stamp = Date.now();
+      const input = join(runtime, `pi-visitor-${stamp}.wav`);
+      const output = join(runtime, `pi-skelly-${stamp}.wav`);
+      await writeFile(input, audio);
+      busy = true;
+      last.error = "";
+      remoteState = { ...remoteState, state: "thinking", detail: "Mac is transcribing and answering", lastSeen: Date.now() };
+      try {
+        const turn = await processAudioTurn(input, output, generation, false, `pi-${stamp}`);
+        if (!turn) return send(response, 422, { error: "No clear speech was detected." });
+        const rendered = await readFile(output);
+        remoteState = { ...remoteState, state: "speaking", detail: turn.reply, lastSeen: Date.now() };
+        return sendAudio(response, rendered, turn.transcript, turn.reply);
+      } finally {
+        busy = false;
+        await unlink(input).catch(() => {});
+        await unlink(output).catch(() => {});
+      }
+    }
     if (request.method === "POST" && url.pathname === "/api/record/start") {
       await startRecording();
       return send(response, 200, { ok: true });
@@ -357,6 +475,10 @@ const server = createServer(async (request, response) => {
       return send(response, 200, { ok: true, ...last });
     }
     if (request.method === "POST" && url.pathname === "/api/conversation/start") {
+      if (deploymentMode === "pi") {
+        last.error = "";
+        return send(response, 200, { ok: true, remoteMode: true });
+      }
       if (conversation) {
         last.error = "";
         return send(response, 200, { ok: true, alreadyActive: true });
@@ -400,4 +522,8 @@ const server = createServer(async (request, response) => {
   }
 });
 
-server.listen(4317, "127.0.0.1", () => console.log("Talking Skelly: http://127.0.0.1:4317"));
+const serverHost = process.env.SKELLY_LISTEN_HOST || (deploymentMode === "pi" ? "0.0.0.0" : "127.0.0.1");
+server.listen(serverPort, serverHost, () => {
+  console.log(`Talking Skelly (${deploymentMode}): http://127.0.0.1:${serverPort}`);
+  if (serverHost !== "127.0.0.1") console.log(`Remote front-end access enabled on port ${serverPort}`);
+});

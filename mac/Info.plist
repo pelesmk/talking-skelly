@@ -6,6 +6,7 @@
   <key>CFBundleDisplayName</key><string>Talking Skelly</string>
   <key>CFBundleExecutable</key><string>TalkingSkelly</string>
   <key>CFBundleIdentifier</key><string>local.talkingskelly.app</string>
+  <key>CFBundleIconFile</key><string>TalkingSkelly.icns</string>
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
   <key>CFBundleName</key><string>Talking Skelly</string>
   <key>CFBundlePackageType</key><string>APPL</string>
@@ -17,5 +18,7 @@
   <key>NSAppTransportSecurity</key>
   <dict><key>NSAllowsLocalNetworking</key><true/></dict>
   <key>SkellyProjectPath</key><string>__SKELLY_PROJECT_PATH__</string>
+  <key>SkellyDeploymentMode</key><string>standalone</string>
+  <key>SkellyServerPort</key><integer>4317</integer>
 </dict>
 </plist>

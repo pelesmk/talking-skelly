@@ -1,0 +1,11 @@
+{
+  "serverUrl": "http://cheetah.local:4318",
+  "token": "PASTE_TOKEN_FROM_MAC_CONTROL_PANEL",
+  "inputFormat": "pulse",
+  "inputDevice": "default",
+  "silenceThresholdDb": -38,
+  "silenceDurationSeconds": 1.1,
+  "maxListenSeconds": 45,
+  "ffmpeg": "ffmpeg",
+  "player": "ffplay"
+}
