@@ -3,6 +3,7 @@ set -euo pipefail
 
 project_dir="${0:A:h:h}"
 icon_src="$project_dir/mac/TalkingSkellyIcon.png"
+signing_identity="${SKELLY_CODESIGN_IDENTITY:--}"
 export CLANG_MODULE_CACHE_PATH="$project_dir/.runtime/clang-module-cache"
 
 mkdir -p "$project_dir/dist" "$CLANG_MODULE_CACHE_PATH"
@@ -20,6 +21,15 @@ for size in 16 32 128 256 512; do
 done
 
 /usr/bin/python3 "$project_dir/scripts/build-icns.py" "$iconset" "$compiled_icon"
+
+sign_app() {
+  local app_dir="$1"
+  if [[ "$signing_identity" == "-" ]]; then
+    /usr/bin/codesign --force --deep --sign - "$app_dir"
+  else
+    /usr/bin/codesign --force --deep --options runtime --timestamp --sign "$signing_identity" "$app_dir"
+  fi
+}
 
 build_app() {
   local app_name="$1"
@@ -44,12 +54,14 @@ build_app() {
     -fobjc-arc \
     -fblocks \
     -O2 \
+    -arch arm64 \
+    -arch x86_64 \
     -framework Cocoa \
     -framework WebKit \
     "$project_dir/mac/TalkingSkellyApp.m" \
     -o "$contents/MacOS/TalkingSkelly"
 
-  /usr/bin/codesign --force --deep --sign - "$app_dir"
+  sign_app "$app_dir"
   echo "$app_dir"
 }
 
@@ -74,12 +86,14 @@ build_remote_app() {
     -fobjc-arc \
     -fblocks \
     -O2 \
+    -arch arm64 \
+    -arch x86_64 \
     -framework Cocoa \
     -framework AVFoundation \
     "$project_dir/mac/TalkingSkellyRemoteApp.m" \
     -o "$contents/MacOS/TalkingSkellyRemote"
 
-  /usr/bin/codesign --force --deep --sign - "$app_dir"
+  sign_app "$app_dir"
   echo "$app_dir"
 }
 
