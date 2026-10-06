@@ -24,10 +24,15 @@ done
 
 sign_app() {
   local app_dir="$1"
+  local entitlements="${2:-}"
+  local entitlement_args=()
+  if [[ -n "$entitlements" ]]; then
+    entitlement_args=(--entitlements "$entitlements")
+  fi
   if [[ "$signing_identity" == "-" ]]; then
-    /usr/bin/codesign --force --deep --sign - "$app_dir"
+    /usr/bin/codesign --force --deep "${entitlement_args[@]}" --sign - "$app_dir"
   else
-    /usr/bin/codesign --force --deep --options runtime --timestamp --sign "$signing_identity" "$app_dir"
+    /usr/bin/codesign --force --deep --options runtime --timestamp "${entitlement_args[@]}" --sign "$signing_identity" "$app_dir"
   fi
 }
 
@@ -93,7 +98,7 @@ build_remote_app() {
     "$project_dir/mac/TalkingSkellyRemoteApp.m" \
     -o "$contents/MacOS/TalkingSkellyRemote"
 
-  sign_app "$app_dir"
+  sign_app "$app_dir" "$project_dir/mac/TalkingSkellyRemote.entitlements"
   echo "$app_dir"
 }
 
