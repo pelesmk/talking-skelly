@@ -192,11 +192,19 @@ systemctl --user status talking-skelly
 
 ## Mac apps
 
-Build the native Mac control center with:
+Build the native Mac apps for local development with:
 
 ```sh
 npm run build:mac
 ```
+
+This local build is ad-hoc signed and is not intended for transfer to another Mac. To produce a Developer ID-signed, Apple-notarized Remote app that can be shared, run:
+
+```sh
+npm run release:mac
+```
+
+The release command uses the first available **Developer ID Application** identity and the `agentstore-notary` Keychain profile. Override either when needed with `SKELLY_CODESIGN_IDENTITY` or `SKELLY_NOTARY_PROFILE`. It creates `dist/Talking-Skelly-Remote-vVERSION-macOS.zip`, staples Apple's notarization ticket, and verifies the final app with Gatekeeper.
 
 The build produces these apps:
 

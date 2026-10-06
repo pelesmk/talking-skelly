@@ -101,3 +101,8 @@ build_app "Talking Skelly" "local.talkingskelly.app" "standalone" 4317
 build_app "Talking Skelly Brain" "local.talkingskelly.brain" "pi" 4318
 build_app "Talking Skelly Pi" "local.talkingskelly.pi" "pi" 4318
 build_remote_app
+
+if [[ "$signing_identity" == "-" ]]; then
+  echo "Local development build complete. It is not Apple-notarized and should not be shared."
+  echo "Run 'npm run release:mac' to create the shareable Talking Skelly Remote ZIP."
+fi
