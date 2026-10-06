@@ -42,19 +42,28 @@ const serverPort = Number(process.env.SKELLY_PORT || (deploymentMode === "pi" ? 
 
 function run(command, args, options = {}, tracked = false) {
   return new Promise((resolveRun, reject) => {
-    const child = spawn(command, args, { cwd: root, ...options });
+    const { timeoutMs = 0, ...spawnOptions } = options;
+    const child = spawn(command, args, { cwd: root, ...spawnOptions });
     if (tracked) voiceProcesses.add(child);
     let stdout = "";
     let stderr = "";
+    let timedOut = false;
+    const timeout = timeoutMs ? setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGKILL");
+    }, timeoutMs) : null;
     child.stdout?.on("data", (data) => (stdout += data));
     child.stderr?.on("data", (data) => (stderr += data));
     child.once("error", (error) => {
+      if (timeout) clearTimeout(timeout);
       voiceProcesses.delete(child);
       reject(error);
     });
     child.once("close", (code) => {
+      if (timeout) clearTimeout(timeout);
       voiceProcesses.delete(child);
-      if (code === 0) resolveRun({ stdout, stderr });
+      if (timedOut) reject(new Error(`${command} timed out after ${Math.round(timeoutMs / 1000)} seconds.`));
+      else if (code === 0) resolveRun({ stdout, stderr });
       else reject(new Error(`${command} exited with ${code}: ${stderr.trim()}`));
     });
   });
@@ -216,13 +225,62 @@ async function stopRecordingAndAnswer() {
   }
 }
 
-async function processAudioTurn(wav, output, generation, playAudio, prefix) {
+async function prepareAudioForTranscription(wav, prefix, generation, speechOffsetSeconds = 0) {
+  const prepared = join(runtime, `${prefix}-clean-${generation}.wav`);
+  const offset = Math.max(0, Math.min(45, Number(speechOffsetSeconds) || 0));
+  await runVoice("ffmpeg", [
+    "-y", "-hide_banner", "-loglevel", "error",
+    ...(offset ? ["-ss", offset.toFixed(2)] : []),
+    "-i", wav,
+    "-af", "highpass=f=180,lowpass=f=7000,afftdn=nf=-28",
+    "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", prepared
+  ], { timeoutMs: 15000 });
+  assertCurrentTurn(generation);
+
+  const probe = await runVoice("ffprobe", [
+    "-v", "error", "-show_entries", "format=duration",
+    "-of", "default=nw=1:nk=1", prepared
+  ], { timeoutMs: 5000 });
+  assertCurrentTurn(generation);
+  const duration = Number.parseFloat(probe.stdout.trim());
+  if (!Number.isFinite(duration) || duration < 0.35) {
+    await unlink(prepared).catch(() => {});
+    return null;
+  }
+
+  const levels = await runVoice("ffmpeg", [
+    "-hide_banner", "-nostats", "-i", prepared,
+    "-af", "volumedetect", "-f", "null", "-"
+  ], { timeoutMs: 5000 });
+  assertCurrentTurn(generation);
+  const meanVolume = Number.parseFloat(levels.stderr.match(/mean_volume:\s*(-?[\d.]+) dB/)?.[1]);
+  const maxVolume = Number.parseFloat(levels.stderr.match(/max_volume:\s*(-?[\d.]+) dB/)?.[1]);
+  if (!Number.isFinite(meanVolume) || !Number.isFinite(maxVolume) || meanVolume < -58 || maxVolume < -38) {
+    await unlink(prepared).catch(() => {});
+    return null;
+  }
+  return prepared;
+}
+
+async function processAudioTurn(wav, output, generation, playAudio, prefix, speechOffsetSeconds = 0) {
   const config = await readConfig();
   const model = resolve(root, config.whisperModel);
   await access(model);
-  const result = await runVoice("whisper-cli", ["-m", model, "-f", wav, "-nt", "-np"]);
-  assertCurrentTurn(generation);
-  const transcript = result.stdout.trim().replace(/^\[[^\]]+\]\s*/gm, "").trim();
+  const prepared = await prepareAudioForTranscription(wav, prefix, generation, speechOffsetSeconds);
+  if (!prepared) return null;
+  let transcript = "";
+  try {
+    // CPU Whisper is fast enough for these short turns and does not compete with
+    // Ollama for Metal memory. No fallback bounds pathological noise-triggered work.
+    const result = await runVoice("whisper-cli", [
+      "--no-gpu", "-nf", "-sns", "-l", "en", "-nth", "0.50",
+      "-m", model, "-f", prepared, "-nt", "-np"
+    ], { timeoutMs: 45000 });
+    assertCurrentTurn(generation);
+    transcript = result.stdout.trim().replace(/^\[[^\]]+\]\s*/gm, "").trim();
+  } finally {
+    await unlink(prepared).catch(() => {});
+  }
   if (!transcript || /^\s*\[(silence|blank audio)\]\s*$/i.test(transcript)) return null;
 
   last.transcript = transcript;
@@ -337,7 +395,7 @@ async function renderSpeech(text, config, generation, output, prefix = "voice") 
     .slice(0, 800);
   if (!clean) throw new Error("Skelly's reply contained no speakable text.");
   const raw = join(runtime, `${prefix}-voice-${generation}.aiff`);
-  await runVoice("say", ["-v", config.voice, "-r", String(config.voiceRate), "-o", raw, clean]);
+  await runVoice("say", ["-v", config.voice, "-r", String(config.voiceRate), "-o", raw, clean], { timeoutMs: 30000 });
   assertCurrentTurn(generation);
   const probe = await runVoice("ffprobe", [
     "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=sample_rate",
@@ -357,7 +415,7 @@ async function renderSpeech(text, config, generation, output, prefix = "voice") 
     `volume=${volume}`,
     "alimiter=limit=0.95"
   ].filter(Boolean).join(",");
-  await runVoice("ffmpeg", ["-y", "-hide_banner", "-loglevel", "error", "-i", raw, "-af", effects, output]);
+  await runVoice("ffmpeg", ["-y", "-hide_banner", "-loglevel", "error", "-i", raw, "-af", effects, output], { timeoutMs: 30000 });
   assertCurrentTurn(generation);
   await unlink(raw).catch(() => {});
 }
@@ -457,15 +515,28 @@ const server = createServer(async (request, response) => {
       if (audio.length < 1000) return send(response, 400, { error: "The remote front end sent an empty recording." });
 
       const generation = turnGeneration;
+      const speechOffset = Number.parseFloat(request.headers["x-skelly-speech-offset"] || "0");
       const stamp = Date.now();
       const input = join(runtime, `pi-visitor-${stamp}.wav`);
       const output = join(runtime, `pi-skelly-${stamp}.wav`);
+      const cancelDisconnectedTurn = () => {
+        if (!response.writableEnded && generation === turnGeneration) {
+          flushCurrentTurn();
+          remoteState = {
+            ...remoteState,
+            state: "ready",
+            detail: "Disconnected turn cancelled",
+            lastSeen: Date.now()
+          };
+        }
+      };
       await writeFile(input, audio);
+      response.once("close", cancelDisconnectedTurn);
       busy = true;
       last.error = "";
       remoteState = { ...remoteState, state: "thinking", detail: "Mac is transcribing and answering", lastSeen: Date.now() };
       try {
-        const turn = await processAudioTurn(input, output, generation, false, `pi-${stamp}`);
+        const turn = await processAudioTurn(input, output, generation, false, `pi-${stamp}`, speechOffset);
         if (!turn) return send(response, 422, { error: "No clear speech was detected." });
         const rendered = await readFile(output);
         remoteState = { ...remoteState, state: "speaking", detail: turn.reply, lastSeen: Date.now() };
@@ -474,6 +545,7 @@ const server = createServer(async (request, response) => {
         assertCurrentTurn(generation);
         throw error;
       } finally {
+        response.off("close", cancelDisconnectedTurn);
         if (generation === turnGeneration) busy = false;
         await unlink(input).catch(() => {});
         await unlink(output).catch(() => {});

@@ -19,7 +19,11 @@
 @property(nonatomic) BOOL running;
 @property(nonatomic) BOOL heardSpeech;
 @property(nonatomic) NSTimeInterval listeningStarted;
+@property(nonatomic) NSTimeInterval speechCandidateStarted;
+@property(nonatomic) NSTimeInterval speechStarted;
 @property(nonatomic) NSTimeInterval silenceStarted;
+@property(nonatomic) float noiseFloorDb;
+@property(nonatomic) NSUInteger noiseSampleCount;
 @property(nonatomic) NSUInteger localGeneration;
 @property(nonatomic, copy) NSString *currentState;
 @property(nonatomic, copy) NSString *currentDetail;
@@ -318,9 +322,13 @@
         return;
     }
     self.heardSpeech = NO;
+    self.speechCandidateStarted = 0;
+    self.speechStarted = 0;
     self.silenceStarted = 0;
+    BOOL needsCalibration = self.noiseSampleCount == 0;
+    if (needsCalibration) self.noiseFloorDb = -55.0;
     self.listeningStarted = [NSDate timeIntervalSinceReferenceDate];
-    [self setStatus:@"listening" detail:@"Waiting for a visitor"];
+    [self setStatus:@"listening" detail:needsCalibration ? @"Calibrating for background noise…" : @"Waiting for a visitor"];
     [self sendRemoteStatus];
     self.meterTimer = [NSTimer scheduledTimerWithTimeInterval:0.10 target:self selector:@selector(checkMicrophone:) userInfo:nil repeats:YES];
 }
@@ -328,18 +336,58 @@
 - (void)checkMicrophone:(NSTimer *)timer {
     [self.recorder updateMeters];
     float power = [self.recorder averagePowerForChannel:0];
+    float peak = [self.recorder peakPowerForChannel:0];
     NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
-    if (power > -38.0) {
-        self.heardSpeech = YES;
+
+    NSTimeInterval listeningAge = now - self.listeningStarted;
+    // Learn the local noise level instead of treating one loud gust or bump as speech.
+    // The EMEET's automatic gain can move this floor considerably when it is outdoors.
+    if (self.noiseSampleCount < 12 && listeningAge < 1.2) {
+        self.noiseSampleCount += 1;
+        if (self.noiseSampleCount == 1) self.noiseFloorDb = power;
+        else self.noiseFloorDb += (power - self.noiseFloorDb) / self.noiseSampleCount;
+        return;
+    }
+    if (!self.heardSpeech && self.speechCandidateStarted == 0) {
+        self.noiseFloorDb = (self.noiseFloorDb * 0.96f) + (power * 0.04f);
+    }
+    if ([self.currentDetail containsString:@"Calibrating"]) {
+        [self setStatus:@"listening" detail:@"Waiting for a visitor"];
+        [self sendRemoteStatus];
+    }
+
+    float speechThreshold = fminf(-12.0f, fmaxf(-38.0f, self.noiseFloorDb + 10.0f));
+    float releaseThreshold = speechThreshold - 5.0f;
+    BOOL speechLike = power > speechThreshold && (peak - power) >= 3.0f;
+
+    if (!self.heardSpeech && speechLike) {
+        if (self.speechCandidateStarted == 0) self.speechCandidateStarted = now;
+        if (now - self.speechCandidateStarted >= 0.35) {
+            self.heardSpeech = YES;
+            self.speechStarted = self.speechCandidateStarted;
+            self.silenceStarted = 0;
+            [self setStatus:@"listening" detail:@"Visitor detected…"];
+            [self sendRemoteStatus];
+        }
+    } else if (!self.heardSpeech) {
+        self.speechCandidateStarted = 0;
+    } else if (power > releaseThreshold) {
         self.silenceStarted = 0;
-    } else if (self.heardSpeech) {
+    } else {
         if (self.silenceStarted == 0) self.silenceStarted = now;
         else if (now - self.silenceStarted >= 1.1) {
             [self finishRecordingAndSend];
             return;
         }
     }
-    if (now - self.listeningStarted >= 45) {
+
+    // Bound every submitted turn so constant noise can never create a huge Whisper job.
+    if (self.heardSpeech && now - self.speechStarted >= 15.0) {
+        [self finishRecordingAndSend];
+        return;
+    }
+
+    if (listeningAge >= 45) {
         [self.meterTimer invalidate];
         [self.recorder stop];
         self.recorder = nil;
@@ -363,6 +411,8 @@
     NSUInteger generation = self.localGeneration;
     NSMutableURLRequest *request = [self requestForPath:@"/api/remote/turn" method:@"POST"];
     [request setValue:@"audio/wav" forHTTPHeaderField:@"Content-Type"];
+    NSTimeInterval speechOffset = fmax(0.0, self.speechStarted - self.listeningStarted - 0.30);
+    [request setValue:[NSString stringWithFormat:@"%.2f", speechOffset] forHTTPHeaderField:@"X-Skelly-Speech-Offset"];
     request.HTTPBody = audio;
     self.turnTask = [[NSURLSession sharedSession] dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
         if (generation != self.localGeneration) return;
