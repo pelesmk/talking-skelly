@@ -192,6 +192,18 @@ systemctl --user status talking-skelly
 
 ## Mac apps
 
+### Install the prebuilt Remote app
+
+The repository includes the signed and Apple-notarized laptop front end at:
+
+`release/Talking-Skelly-Remote-v0.1.0-macOS.zip`
+
+After cloning or pulling the repository on the laptop, unzip that file and move **Talking Skelly Remote.app** to Applications. The laptop does not need Xcode, Node, a Developer ID certificate, or any of the AI dependencies.
+
+You can also download the same prebuilt app from the [v0.1.0 GitHub Release](https://github.com/pelesmk/talking-skelly/releases/tag/v0.1.0).
+
+### Build from source
+
 Build the native Mac apps for local development with:
 
 ```sh
