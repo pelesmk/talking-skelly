@@ -431,6 +431,16 @@ const server = createServer(async (request, response) => {
     if (request.method === "GET" && apiPath === "/api/remote/health") {
       return send(response, 200, { ok: true, busy, generation: turnGeneration });
     }
+    if (request.method === "POST" && apiPath === "/api/remote/flush") {
+      const result = flushCurrentTurn();
+      remoteState = {
+        ...remoteState,
+        state: "ready",
+        detail: "Current turn flushed",
+        lastSeen: Date.now()
+      };
+      return send(response, 200, { ...result, generation: turnGeneration });
+    }
     if (request.method === "POST" && apiPath === "/api/remote/status") {
       const update = await jsonBody(request);
       remoteState = {
@@ -460,8 +470,11 @@ const server = createServer(async (request, response) => {
         const rendered = await readFile(output);
         remoteState = { ...remoteState, state: "speaking", detail: turn.reply, lastSeen: Date.now() };
         return sendAudio(response, rendered, turn.transcript, turn.reply);
+      } catch (error) {
+        assertCurrentTurn(generation);
+        throw error;
       } finally {
-        busy = false;
+        if (generation === turnGeneration) busy = false;
         await unlink(input).catch(() => {});
         await unlink(output).catch(() => {});
       }

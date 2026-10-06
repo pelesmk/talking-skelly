@@ -196,7 +196,7 @@ systemctl --user status talking-skelly
 
 The repository includes the signed and Apple-notarized laptop front end at:
 
-`release/Talking-Skelly-Remote-v0.1.1-macOS.zip`
+`release/Talking-Skelly-Remote-v0.1.2-macOS.zip`
 
 After cloning or pulling the repository on the laptop, unzip that file and move **Talking Skelly Remote.app** to Applications. The laptop does not need Xcode, Node, a Developer ID certificate, or any of the AI dependencies.
 
@@ -230,6 +230,8 @@ The first two apps open their own control panel and start the correct server aut
 ## Recovery
 
 Use **Flush current turn** in the Mac Ultra control panel to cancel a stuck transcription, model response, or voice render. The remote front end automatically returns to listening after the interrupted request completes.
+
+The Mac laptop's **Talking Skelly Remote** app also has a **Flush current turn** button. It securely cancels work on both the laptop and Mac Ultra, discards stale replies, clears the displayed turn, and immediately resumes listening when voice chat is active.
 
 ## License
 

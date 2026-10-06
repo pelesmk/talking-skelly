@@ -9,8 +9,10 @@
 @property(nonatomic, strong) NSTextField *transcriptLabel;
 @property(nonatomic, strong) NSTextField *replyLabel;
 @property(nonatomic, strong) NSButton *startButton;
+@property(nonatomic, strong) NSButton *flushButton;
 @property(nonatomic, strong) AVAudioRecorder *recorder;
 @property(nonatomic, strong) AVAudioPlayer *player;
+@property(nonatomic, strong) NSURLSessionDataTask *turnTask;
 @property(nonatomic, strong) NSTimer *meterTimer;
 @property(nonatomic, strong) NSTimer *heartbeatTimer;
 @property(nonatomic, strong) NSURL *recordingURL;
@@ -18,6 +20,7 @@
 @property(nonatomic) BOOL heardSpeech;
 @property(nonatomic) NSTimeInterval listeningStarted;
 @property(nonatomic) NSTimeInterval silenceStarted;
+@property(nonatomic) NSUInteger localGeneration;
 @property(nonatomic, copy) NSString *currentState;
 @property(nonatomic, copy) NSString *currentDetail;
 @end
@@ -102,13 +105,20 @@
     testButton.action = @selector(testConnection:);
     [view addSubview:testButton];
 
-    self.startButton = [[NSButton alloc] initWithFrame:NSMakeRect(192, 420, 538, 36)];
+    self.startButton = [[NSButton alloc] initWithFrame:NSMakeRect(192, 420, 356, 36)];
     self.startButton.title = @"Start voice chat";
     self.startButton.bezelStyle = NSBezelStyleRounded;
     self.startButton.keyEquivalent = @"\r";
     self.startButton.target = self;
     self.startButton.action = @selector(toggleConversation:);
     [view addSubview:self.startButton];
+
+    self.flushButton = [[NSButton alloc] initWithFrame:NSMakeRect(560, 420, 170, 36)];
+    self.flushButton.title = @"Flush current turn";
+    self.flushButton.bezelStyle = NSBezelStyleRounded;
+    self.flushButton.target = self;
+    self.flushButton.action = @selector(flushCurrentTurn:);
+    [view addSubview:self.flushButton];
 
     self.statusLabel = [self bubbleWithFrame:NSMakeRect(30, 362, 700, 42)];
     self.statusLabel.stringValue = @"Enter the Mac Ultra address and token, then test the connection.";
@@ -230,6 +240,9 @@
 
 - (void)stopConversation {
     self.running = NO;
+    self.localGeneration += 1;
+    [self.turnTask cancel];
+    self.turnTask = nil;
     [self.meterTimer invalidate];
     [self.heartbeatTimer invalidate];
     self.meterTimer = nil;
@@ -243,6 +256,47 @@
     self.tokenField.enabled = YES;
     [self setStatus:@"stopped" detail:@"Voice chat is off."];
     [self sendRemoteStatus];
+}
+
+- (void)flushCurrentTurn:(id)sender {
+    [self saveSettings];
+    NSMutableURLRequest *request = [self requestForPath:@"/api/remote/flush" method:@"POST"];
+    if (!request || self.tokenField.stringValue.length == 0) {
+        [self setStatus:@"error" detail:@"Enter the private AI address and access token."];
+        return;
+    }
+
+    self.localGeneration += 1;
+    [self.meterTimer invalidate];
+    self.meterTimer = nil;
+    [self.turnTask cancel];
+    self.turnTask = nil;
+    [self.recorder stop];
+    [self.player stop];
+    self.recorder = nil;
+    self.player = nil;
+    self.flushButton.enabled = NO;
+    [self setStatus:@"flushing" detail:@"Cancelling work on this Mac and the Mac Ultra…"];
+
+    [[[NSURLSession sharedSession] dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        NSHTTPURLResponse *http = (NSHTTPURLResponse *)response;
+        NSString *message = error.localizedDescription ?: [self errorMessageFromData:data fallback:[NSString stringWithFormat:@"Mac Ultra returned %ld", (long)http.statusCode]];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            self.flushButton.enabled = YES;
+            if (error || http.statusCode != 200) {
+                [self setStatus:@"error" detail:message];
+                return;
+            }
+            self.transcriptLabel.stringValue = @"—";
+            self.replyLabel.stringValue = @"—";
+            if (self.running) {
+                [self setStatus:@"ready" detail:@"Flushed. Resuming listening…"];
+                [self beginListening];
+            } else {
+                [self setStatus:@"stopped" detail:@"Current turn flushed. Voice chat is off."];
+            }
+        });
+    }] resume];
 }
 
 - (void)beginListening {
@@ -306,24 +360,33 @@
 
     [self setStatus:@"thinking" detail:@"The Mac Ultra is answering…"];
     [self sendRemoteStatus];
+    NSUInteger generation = self.localGeneration;
     NSMutableURLRequest *request = [self requestForPath:@"/api/remote/turn" method:@"POST"];
     [request setValue:@"audio/wav" forHTTPHeaderField:@"Content-Type"];
     request.HTTPBody = audio;
-    [[[NSURLSession sharedSession] dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+    self.turnTask = [[NSURLSession sharedSession] dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        if (generation != self.localGeneration) return;
         NSHTTPURLResponse *http = (NSHTTPURLResponse *)response;
         if (error || http.statusCode != 200 || ![[http valueForHTTPHeaderField:@"Content-Type"] hasPrefix:@"audio/wav"]) {
             NSString *message = error.localizedDescription ?: [self errorMessageFromData:data fallback:[NSString stringWithFormat:@"Mac Ultra returned %ld", (long)http.statusCode]];
-            dispatch_async(dispatch_get_main_queue(), ^{ [self handleRecoverableError:message]; });
+            dispatch_async(dispatch_get_main_queue(), ^{
+                if (generation != self.localGeneration) return;
+                self.turnTask = nil;
+                [self handleRecoverableError:message];
+            });
             return;
         }
         NSString *transcript = [self decodeHeader:[http valueForHTTPHeaderField:@"X-Skelly-Transcript"]];
         NSString *reply = [self decodeHeader:[http valueForHTTPHeaderField:@"X-Skelly-Reply"]];
         dispatch_async(dispatch_get_main_queue(), ^{
+            if (generation != self.localGeneration) return;
+            self.turnTask = nil;
             self.transcriptLabel.stringValue = transcript.length ? transcript : @"—";
             self.replyLabel.stringValue = reply.length ? reply : @"—";
             [self playResponse:data];
         });
-    }] resume];
+    }];
+    [self.turnTask resume];
 }
 
 - (NSString *)decodeHeader:(NSString *)value {
@@ -350,6 +413,7 @@
 }
 
 - (void)audioPlayerDidFinishPlaying:(AVAudioPlayer *)player successfully:(BOOL)flag {
+    if (player != self.player) return;
     self.player = nil;
     if (self.running) [self beginListening];
 }
@@ -359,7 +423,10 @@
     self.currentState = @"error";
     self.currentDetail = message;
     [self sendRemoteStatus];
-    if (self.running) [self performSelector:@selector(beginListening) withObject:nil afterDelay:3.0];
+    NSUInteger generation = self.localGeneration;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (self.running && generation == self.localGeneration) [self beginListening];
+    });
 }
 
 - (void)sendHeartbeat:(NSTimer *)timer {
