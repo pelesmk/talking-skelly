@@ -44,7 +44,7 @@ flowchart LR
 
 The laptop only needs **Talking Skelly Remote.app**. It does not need Node, Whisper, Ollama, or the voice model. It uses the microphone and speaker selected in the laptop's macOS Sound settings and automatically resumes listening after Skelly finishes speaking.
 
-At the start of each listening cycle, the app briefly measures the outdoor background level. A visitor must remain above that adaptive level for a moment before a turn begins, so a wind gust or isolated bump is not treated as speech. The backend removes low-frequency wind and steady noise before transcription, rejects recordings that contain no strong voice signal, and limits every processing stage so one bad recording cannot leave the brain permanently busy.
+At the start of each listening cycle, the app briefly measures the outdoor background level. A visitor must remain above that adaptive level for a moment before a turn begins, so a wind gust or isolated bump is not treated as speech. The backend removes low-frequency wind and steady noise before transcription, rejects recordings that contain no strong voice signal, and limits every processing stage so one bad recording cannot leave the brain permanently busy. After Skelly speaks, the app waits for Bluetooth and acoustic echo to clear before listening again. The reply guard also removes model drafts and prevents Skelly from repeating an unanswered question.
 
 Do not run both Mac Ultra backend apps simultaneously. They share the same model, voice settings, and runtime files.
 
@@ -198,7 +198,7 @@ systemctl --user status talking-skelly
 
 The repository includes the signed and Apple-notarized laptop front end at:
 
-`release/Talking-Skelly-Remote-v0.1.3-macOS.zip`
+`release/Talking-Skelly-Remote-v0.1.4-macOS.zip`
 
 After cloning or pulling the repository on the laptop, unzip that file and move **Talking Skelly Remote.app** to Applications. The laptop does not need Xcode, Node, a Developer ID certificate, or any of the AI dependencies.
 

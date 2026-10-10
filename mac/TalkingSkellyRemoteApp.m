@@ -465,7 +465,16 @@
 - (void)audioPlayerDidFinishPlaying:(AVAudioPlayer *)player successfully:(BOOL)flag {
     if (player != self.player) return;
     self.player = nil;
-    if (self.running) [self beginListening];
+    if (!self.running) return;
+
+    // Bluetooth speakers can continue emitting buffered audio after local playback
+    // reports completion. Wait for that tail to clear so Skelly cannot hear himself.
+    NSUInteger generation = self.localGeneration;
+    [self setStatus:@"ready" detail:@"Letting Skelly's speaker finish…"];
+    [self sendRemoteStatus];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (self.running && generation == self.localGeneration && self.player == nil) [self beginListening];
+    });
 }
 
 - (void)handleRecoverableError:(NSString *)message {

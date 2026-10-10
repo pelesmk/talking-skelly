@@ -98,7 +98,12 @@ async function requestReply(config, messages, generation) {
         think: false,
         keep_alive: "30m",
         messages,
-        options: { temperature: 0.8, num_predict: 180 }
+        options: {
+          temperature: 0.78,
+          num_predict: 120,
+          repeat_last_n: 256,
+          repeat_penalty: 1.10
+        }
       })
     });
     assertCurrentTurn(generation);
@@ -269,25 +274,48 @@ async function processAudioTurn(wav, output, generation, playAudio, prefix, spee
   const prepared = await prepareAudioForTranscription(wav, prefix, generation, speechOffsetSeconds);
   if (!prepared) return null;
   let transcript = "";
+  const whisperOutput = join(runtime, `${prefix}-whisper-${generation}`);
+  const whisperJson = `${whisperOutput}.json`;
   try {
     // CPU Whisper is fast enough for these short turns and does not compete with
     // Ollama for Metal memory. No fallback bounds pathological noise-triggered work.
     const result = await runVoice("whisper-cli", [
       "--no-gpu", "-nf", "-sns", "-l", "en", "-nth", "0.50",
-      "-m", model, "-f", prepared, "-nt", "-np"
+      "-m", model, "-f", prepared, "-nt", "-np", "-ojf", "-of", whisperOutput
     ], { timeoutMs: 45000 });
     assertCurrentTurn(generation);
-    transcript = result.stdout.trim().replace(/^\[[^\]]+\]\s*/gm, "").trim();
+    let report = null;
+    try {
+      report = JSON.parse(await readFile(whisperJson, "utf8"));
+    } catch {}
+    if (report?.transcription) {
+      transcript = report.transcription.map((segment) => segment.text || "").join(" ").replace(/\s+/g, " ").trim();
+      const wordProbabilities = report.transcription.flatMap((segment) => segment.tokens || [])
+        .filter((token) => !String(token.text || "").startsWith("[_") && /[a-z0-9]/i.test(String(token.text || "")))
+        .map((token) => Number(token.p))
+        .filter(Number.isFinite);
+      const confidence = wordProbabilities.length
+        ? wordProbabilities.reduce((sum, value) => sum + value, 0) / wordProbabilities.length
+        : 0;
+      if (confidence < 0.58 || (wordProbabilities.length <= 2 && confidence < 0.76)) transcript = "";
+    } else {
+      transcript = result.stdout.trim().replace(/^\[[^\]]+\]\s*/gm, "").trim();
+    }
   } finally {
     await unlink(prepared).catch(() => {});
+    await unlink(whisperJson).catch(() => {});
   }
   if (!transcript || /^\s*\[(silence|blank audio)\]\s*$/i.test(transcript)) return null;
 
   last.transcript = transcript;
   const nextHistory = [...history, { role: "user", content: transcript }].slice(-12);
-  const data = await requestReply(config, [{ role: "system", content: config.systemPrompt }, ...nextHistory], generation);
+  const varietyPrompt = "Reply with at most three natural sentences and no more than one question. Never repeat or rephrase an earlier question. If the visitor did not answer it, let it go. Give only Skelly's spoken response, with no drafts, notes, analysis, or alternatives.";
+  const data = await requestReply(config, [
+    { role: "system", content: `${config.systemPrompt}\n\n${varietyPrompt}` },
+    ...nextHistory
+  ], generation);
   assertCurrentTurn(generation);
-  const reply = data.message?.content?.trim();
+  const reply = cleanReply(data.message?.content, history);
   if (!reply) throw new Error("Ollama returned an empty response.");
 
   last.reply = reply;
@@ -298,6 +326,59 @@ async function processAudioTurn(wav, output, generation, playAudio, prefix, spee
   }
   history = [...nextHistory, { role: "assistant", content: reply }].slice(-12);
   return { transcript, reply, output };
+}
+
+const commonWords = new Set([
+  "about", "after", "again", "also", "and", "are", "been", "before", "but", "can", "did", "does",
+  "for", "from", "have", "how", "into", "just", "like", "more", "not", "now", "that", "the", "their",
+  "them", "then", "there", "they", "this", "was", "were", "what", "when", "where", "which", "who", "will",
+  "with", "would", "you", "your"
+]);
+
+function comparisonWords(text) {
+  return (String(text || "").toLowerCase().match(/[a-z0-9']+/g) || [])
+    .filter((word) => word.length > 2 && !commonWords.has(word));
+}
+
+function sentenceSimilarity(left, right) {
+  const a = new Set(comparisonWords(left));
+  const b = new Set(comparisonWords(right));
+  if (!a.size || !b.size) return 0;
+  let shared = 0;
+  for (const word of a) if (b.has(word)) shared += 1;
+  return shared / Math.min(a.size, b.size);
+}
+
+function cleanReply(raw, priorHistory) {
+  if (!raw) return "";
+  const safeLines = [];
+  for (const line of String(raw).split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (/^(?:\*?\(?\s*)?(?:note|analysis|revision|alternative|wait\b|actually\b|corrected response)/i.test(trimmed)) break;
+    if (trimmed) safeLines.push(trimmed);
+  }
+  const candidate = safeLines.join(" ")
+    .replace(/[`*_#>~]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const sentences = candidate.match(/[^.!?]+[.!?]+|[^.!?]+$/g) || [];
+  const priorSentences = priorHistory
+    .filter((message) => message.role === "assistant")
+    .flatMap((message) => String(message.content || "").match(/[^.!?]+[.!?]+|[^.!?]+$/g) || []);
+  const chosen = [];
+  let questions = 0;
+  for (const rawSentence of sentences) {
+    const sentence = rawSentence.trim().replace(/^["']+|["']+$/g, "");
+    if (!sentence || /(?:original prompt|inside character|breaking frame|language model|sentences? total|at most \w+ sentences?|no more than \w+ questions?)/i.test(sentence)) continue;
+    const isQuestion = sentence.endsWith("?");
+    if (isQuestion && questions >= 1) continue;
+    const repeated = priorSentences.some((prior) => sentenceSimilarity(sentence, prior) >= 0.72);
+    if (repeated) continue;
+    if (isQuestion) questions += 1;
+    chosen.push(sentence);
+    if (chosen.length >= 3 || chosen.join(" ").length >= 420) break;
+  }
+  return chosen.join(" ").slice(0, 480).trim();
 }
 
 async function captureAutomaticTurn(generation) {
