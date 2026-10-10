@@ -100,7 +100,7 @@ async function requestReply(config, messages, generation) {
         messages,
         options: {
           temperature: 0.78,
-          num_predict: 120,
+          num_predict: 105,
           repeat_last_n: 256,
           repeat_penalty: 1.10
         }
@@ -309,7 +309,7 @@ async function processAudioTurn(wav, output, generation, playAudio, prefix, spee
 
   last.transcript = transcript;
   const nextHistory = [...history, { role: "user", content: transcript }].slice(-12);
-  const varietyPrompt = "Reply with at most three natural sentences and no more than one question. Never repeat or rephrase an earlier question. If the visitor did not answer it, let it go. Give only Skelly's spoken response, with no drafts, notes, analysis, or alternatives.";
+  const varietyPrompt = "Reply with two or three concise natural sentences, aiming for 55 to 65 spoken words and never exceeding 65 words. Ask no more than one question. Never repeat or rephrase an earlier question. If the visitor did not answer it, let it go. Give only Skelly's spoken response, with no drafts, notes, analysis, or alternatives.";
   const data = await requestReply(config, [
     { role: "system", content: `${config.systemPrompt}\n\n${varietyPrompt}` },
     ...nextHistory
@@ -358,6 +358,7 @@ function cleanReply(raw, priorHistory) {
     if (trimmed) safeLines.push(trimmed);
   }
   const candidate = safeLines.join(" ")
+    .replace(/\([^)]*\)/g, " ")
     .replace(/[`*_#>~]/g, "")
     .replace(/\s+/g, " ")
     .trim();
@@ -367,18 +368,28 @@ function cleanReply(raw, priorHistory) {
     .flatMap((message) => String(message.content || "").match(/[^.!?]+[.!?]+|[^.!?]+$/g) || []);
   const chosen = [];
   let questions = 0;
+  let spokenWords = 0;
+  const maxSpokenWords = 65;
   for (const rawSentence of sentences) {
     const sentence = rawSentence.trim().replace(/^["']+|["']+$/g, "");
     if (!sentence || /(?:original prompt|inside character|breaking frame|language model|sentences? total|at most \w+ sentences?|no more than \w+ questions?)/i.test(sentence)) continue;
-    const isQuestion = sentence.endsWith("?");
+    const isQuestion = sentence.endsWith("?") || /^(?:do|does|did|are|is|can|could|would|will|what|where|when|who|why|how)\b/i.test(sentence);
     if (isQuestion && questions >= 1) continue;
     const repeated = priorSentences.some((prior) => sentenceSimilarity(sentence, prior) >= 0.72);
     if (repeated) continue;
+    const sentenceWords = sentence.match(/[a-z0-9]+(?:['-][a-z0-9]+)*/gi) || [];
+    if (spokenWords + sentenceWords.length > maxSpokenWords) {
+      if (chosen.length) break;
+      const clipped = sentence.split(/\s+/).slice(0, maxSpokenWords).join(" ").replace(/[,;:]$/, "");
+      chosen.push(/[.!?]$/.test(clipped) ? clipped : `${clipped}.`);
+      break;
+    }
     if (isQuestion) questions += 1;
     chosen.push(sentence);
-    if (chosen.length >= 3 || chosen.join(" ").length >= 420) break;
+    spokenWords += sentenceWords.length;
+    if (chosen.length >= 3 || spokenWords >= maxSpokenWords) break;
   }
-  return chosen.join(" ").slice(0, 480).trim();
+  return chosen.join(" ").trim();
 }
 
 async function captureAutomaticTurn(generation) {
